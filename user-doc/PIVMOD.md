@@ -8,7 +8,7 @@ reference: To be completed
 
 ## Overview
 
-To be completed
+The PIV collective variable module contains all features related to the use of the Permutation Invariant Vector (PIV) as a collective variable. This module refers to the implementation done in the article \cite pipolo2017navigating
 
 ## Installation 
 This module is not installed by default. Add '\-\-enable-modules=piv' to your './configure' command when building PLUMED to enable these features.
