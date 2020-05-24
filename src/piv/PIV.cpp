@@ -205,7 +205,9 @@ private:
     std::vector<string> sw;
     //std::vector<std:: vector<unsigned> > com2atoms;
     std::vector<NeighborList *> nl;
+    std::vector<NeighborList *> nl_ref;
     std::vector<NeighborList *> nlcom;
+    std::vector<NeighborList *> nlcom_ref;
     std::vector<Vector> m_deriv;
     Tensor m_virial;
     bool Svol,Sfac,cross,direct,doneigh,test,CompDer,com;
@@ -273,6 +275,7 @@ PIV::PIV(const ActionOptions&ao):
     m_PIVdistance(0.),
     m_deriv(std:: vector<Vector>(1)),
     nl(std:: vector<NeighborList *>(Nlist)),
+    nl_ref(std:: vector<NeighborList *>(Nlist)),
     rPIV(std:: vector<std:: vector<double> >(Nlist)),
     scaling(std:: vector<double>(Nlist)),
     r00(std:: vector<double>(Nlist)),
@@ -281,6 +284,7 @@ PIV::PIV(const ActionOptions&ao):
     fmass(std:: vector<double>(Nlist)),
     dosort(std:: vector<bool>(Nlist)),
     nlcom(std:: vector<NeighborList *>(NLsize)),
+    nlcom_ref(std:: vector<NeighborList *>(NLsize)),
     compos(std:: vector<Vector>(NLsize))
 //com2atoms(std:: vector<std:: vector<unsigned> >(Nlist))
 {
@@ -374,6 +378,18 @@ PIV::PIV(const ActionOptions&ao):
         error("Error in reference PDB file");
     }
 
+    //build box vectors and correct for pbc
+    log << "Building the box from PDB data ... \n";
+    Tensor Box=mypdb.getBoxVec();
+    log << "  Done! A,B,C vectors in Cartesian space:  \n";
+    log.printf("  A:  %12.6f%12.6f%12.6f\n", Box[0][0],Box[0][1],Box[0][2]);
+    log.printf("  B:  %12.6f%12.6f%12.6f\n", Box[1][0],Box[1][1],Box[1][2]);
+    log.printf("  C:  %12.6f%12.6f%12.6f\n", Box[2][0],Box[2][1],Box[2][2]);
+    log << "Changing the PBC according to the new box \n";
+    Pbc mypbc;
+    mypbc.setBox(Box);
+    log << "The box volume is " << mypbc.getBox().determinant() << " \n";
+
     // Build COM/Atom lists of AtomNumbers (this might be done in PBC.cpp)
     // Atomlist or Plist used to build pair lists
     std:: vector<std:: vector<AtomNumber> > Plist(Natm);
@@ -414,6 +430,7 @@ PIV::PIV(const ActionOptions&ao):
     comatm.resize(NLsize);
     if(com) {
         nlcom.resize(NLsize);
+        nlcom_ref.resize(NLsize);
         compos.resize(NLsize);
         fmass.resize(NLsize,0.);
     }
@@ -504,6 +521,7 @@ PIV::PIV(const ActionOptions&ao):
     // Neighbour Lists option
     parseFlag("NLIST",doneigh);
     nl.resize(Nlist);
+    nl_ref.resize(Nlist);
     nl_skin.resize(Nlist);
     if(doneigh) {
         std:: vector<double> nl_cut(Nlist,0.);
@@ -528,6 +546,7 @@ PIV::PIV(const ActionOptions&ao):
             for (unsigned i=0; i<compos.size(); i++) {
                 // WARNING: is nl_cut meaningful here?
                 nlcom[i]= new NeighborList(comatm[i],pbc,getPbc(),nl_cut[0],nl_st[0]);
+                nlcom_ref[i]= new NeighborList(comatm[i],pbc,mypbc,nl_cut[0],nl_st[0]);
             }
         }
         unsigned ncnt=0;
@@ -535,6 +554,7 @@ PIV::PIV(const ActionOptions&ao):
         if(direct) {
             for (unsigned j=0; j<Natm; j++) {
                 nl[ncnt]= new NeighborList(Plist[j],pbc,getPbc(),nl_cut[j],nl_st[j]);
+                nl_ref[ncnt]= new NeighborList(Plist[j],pbc,mypbc,nl_cut[j],nl_st[j]);
                 ncnt+=1;
             }
         }
@@ -543,6 +563,7 @@ PIV::PIV(const ActionOptions&ao):
             for (unsigned j=0; j<Natm; j++) {
                 for (unsigned i=j+1; i<Natm; i++) {
                     nl[ncnt]= new NeighborList(Plist[i],Plist[j],false,pbc,getPbc(),nl_cut[ncnt],nl_st[ncnt]);
+                    nl_ref[ncnt]= new NeighborList(Plist[i],Plist[j],false,pbc,mypbc,nl_cut[ncnt],nl_st[ncnt]);
                     ncnt+=1;
                 }
             }
@@ -552,12 +573,13 @@ PIV::PIV(const ActionOptions&ao):
         nlall= new NeighborList(listall,pbc,getPbc());
         for (unsigned j=0; j<Nlist; j++) {
             nl[j]= new NeighborList(Plist[j],Plist[j],true,pbc,getPbc());
+            nl_ref[j]= new NeighborList(Plist[j],Plist[j],true,pbc,mypbc);
         }
     }
     // Output Nlist
     log << "Total Nlists: " << Nlist << " \n";
     for (unsigned j=0; j<Nlist; j++) {
-        log << "  list " << j+1 << "   size " << nl[j]->size() << " \n";
+        log << "  list " << j+1 << "   size " << nl_ref[j]->size() << " \n";
     }
     // Calculate COM masses once and for all from lists
     if(com) {
@@ -565,12 +587,12 @@ PIV::PIV(const ActionOptions&ao):
         //log << "Computing COM masses  \n";
         for(unsigned j=0; j<compos.size(); j++) {
             double commass=0.;
-            for(unsigned i=0; i<nlcom[j]->getFullAtomList().size(); i++) {
-                unsigned andx=nlcom[j]->getFullAtomList()[i].index();
+            for(unsigned i=0; i<nlcom_ref[j]->getFullAtomList().size(); i++) {
+                unsigned andx=nlcom_ref[j]->getFullAtomList()[i].index();
                 commass+=mypdb.getOccupancy()[andx];
             }
-            for(unsigned i=0; i<nlcom[j]->getFullAtomList().size(); i++) {
-                unsigned andx=nlcom[j]->getFullAtomList()[i].index();
+            for(unsigned i=0; i<nlcom_ref[j]->getFullAtomList().size(); i++) {
+                unsigned andx=nlcom_ref[j]->getFullAtomList()[i].index();
                 if(commass>0.) {
                     fmass[andx]=mypdb.getOccupancy()[andx]/commass;
                 } else {
@@ -591,18 +613,6 @@ PIV::PIV(const ActionOptions&ao):
             dosort[i]=true;
         }
     }
-
-    //build box vectors and correct for pbc
-    log << "Building the box from PDB data ... \n";
-    Tensor Box=mypdb.getBoxVec();
-    log << "  Done! A,B,C vectors in Cartesian space:  \n";
-    log.printf("  A:  %12.6f%12.6f%12.6f\n", Box[0][0],Box[0][1],Box[0][2]);
-    log.printf("  B:  %12.6f%12.6f%12.6f\n", Box[1][0],Box[1][1],Box[1][2]);
-    log.printf("  C:  %12.6f%12.6f%12.6f\n", Box[2][0],Box[2][1],Box[2][2]);
-    log << "Changing the PBC according to the new box \n";
-    Pbc mypbc;
-    mypbc.setBox(Box);
-    log << "The box volume is " << mypbc.getBox().determinant() << " \n";
 
     //Compute scaling factor
     if(Svol) {
@@ -653,8 +663,8 @@ PIV::PIV(const ActionOptions&ao):
             compos[j][0]=0.;
             compos[j][1]=0.;
             compos[j][2]=0.;
-            for(unsigned i=0; i<nlcom[j]->getFullAtomList().size(); i++) {
-                unsigned andx=nlcom[j]->getFullAtomList()[i].index();
+            for(unsigned i=0; i<nlcom_ref[j]->getFullAtomList().size(); i++) {
+                unsigned andx=nlcom_ref[j]->getFullAtomList()[i].index();
                 compos[j]+=fmass[andx]*mypdb.getPositions()[andx];
             }
         }
@@ -663,10 +673,21 @@ PIV::PIV(const ActionOptions&ao):
     if(CompDer) {
         log << "  PIV  |  block   |     Size      |     Zeros     |     Ones      |" << " \n";
     }
+    std:: vector<std:: vector<Vector> > prev_pos(Nlist);
     for(unsigned j=0; j<Nlist; j++) {
-        for(unsigned i=0; i<nl[j]->size(); i++) {
-            unsigned i0=(nl[j]->getClosePairAtomNumber(i).first).index();
-            unsigned i1=(nl[j]->getClosePairAtomNumber(i).second).index();
+        for (unsigned i=0; i<nl_ref[j]->getFullAtomList().size(); i++) {
+            Vector Pos;
+            if(com) {
+                Pos=compos[i];
+            } else {
+                Pos=mypdb.getPositions()[nl_ref[j]->getFullAtomList()[i].index()];
+            }
+            prev_pos[j].push_back(Pos);
+        }
+        nl_ref[j]->update(prev_pos[j]);
+        for(unsigned i=0; i<nl_ref[j]->size(); i++) {
+            unsigned i0=(nl_ref[j]->getClosePairAtomNumber(i).first).index();
+            unsigned i1=(nl_ref[j]->getClosePairAtomNumber(i).second).index();
             //calculate/get COM position of centers i0 and i1
             Vector Pos0,Pos1;
             if(com) {
@@ -724,10 +745,12 @@ PIV::~PIV()
 {
     for (unsigned j=0; j<Nlist; j++) {
         delete nl[j];
+        delete nl_ref[j];
     }
     if(com) {
         for (unsigned j=0; j<NLsize; j++) {
             delete nlcom[j];
+            delete nlcom_ref[j];
         }
     }
     delete nlall;
@@ -861,7 +884,7 @@ void PIV::calculate()
             }
             // Decide whether to update lists based on atom displacement, every stride
             std:: vector<std:: vector<Vector> > tmp_pos(Nlist);
-            if (getStep() % nlall->getStride() ==0) {
+            if (getStep() % nlall->getStride() ==0 || prev_stp==-1) {
                 bool docom=com;
                 for (unsigned j=0; j<Nlist; j++) {
                     for (unsigned i=0; i<nl[j]->getFullAtomList().size(); i++) {
